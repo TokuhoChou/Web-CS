@@ -21,6 +21,7 @@ io.on('connection',socket=>{
  wrap(socket,'create',()=>{if(socket.data.seat)fail('请先离开当前房间');const r={code:code(),players:[],g:game.newGame(),pending:null,seen:new Set()};const p={token:token(),color:'r',socket:null};r.players.push(p);rooms.set(r.code,r);attach(socket,r,p);return {code:r.code,token:p.token,color:p.color,state:state(r)};});
  wrap(socket,'join',d=>{if(socket.data.seat)fail('请先离开当前房间');const r=rooms.get(String(d.code||'').trim());if(!r)fail('房间不存在或已结束');if(r.players.length>=2)fail('房间已满');const p={token:token(),color:'b',socket:null};r.players.push(p);attach(socket,r,p);return {code:r.code,token:p.token,color:p.color,state:state(r)};});
  wrap(socket,'restore',d=>{const r=rooms.get(String(d.code||'')),p=r?.players.find(v=>v.token===d.token);if(!p)fail('房间已结束，请重新创建或加入');if(socket.data.seat&&socket.data.seat.code!==r.code)fail('请先离开当前房间');attach(socket,r,p);return {code:r.code,token:p.token,color:p.color,state:state(r)};});
+ wrap(socket,'leave',()=>{const a=lookup(socket);if(!a)fail('请先加入房间');const {r,p}=a;socket.leave(r.code);socket.data.seat=null;p.socket=null;clearTimeout(p.timer);r.pending=null;r.g.result={winner:null,reason:'对方已离开房间'};broadcast(r);cleanup(r);return {};});
  wrap(socket,'move',d=>{const a=lookup(socket);if(!a)fail('请先加入房间');const {r,p}=a;if(typeof d.id!=='string'||d.id.length>100||!d.id)fail('请求无效');if(r.seen.has(d.id))return {};if(r.players.length<2||r.players.some(x=>!x.socket))fail('等待双方在线');if(r.pending)fail('请先处理当前请求');if(r.g.result)fail('本局已经结束');if(r.g.turn!==p.color)fail('还没有轮到你');if(!game.move(r.g,p.color,d.fx,d.fy,d.tx,d.ty))fail('不符合走棋规则');r.seen.add(d.id);broadcast(r);return {};});
  wrap(socket,'request',d=>{const a=lookup(socket);if(!a)fail('请先加入房间');const {r,p}=a;if(r.players.length<2||r.players.some(x=>!x.socket))fail('等待双方在线');if(r.pending)fail('已有请求等待处理');if(d.kind==='undo'){if(r.g.result||!r.g.history.length)fail('当前无法悔棋');}else if(d.kind==='restart'){if(!r.g.result)fail('本局结束后才能再来一局');}else fail('请求无效');r.pending={kind:d.kind,from:p.color};broadcast(r);return {};});
  wrap(socket,'respond',d=>{const a=lookup(socket);if(!a)fail('请先加入房间');const {r,p}=a;if(!r.pending||r.pending.from===p.color)fail('没有需要你处理的请求');if(r.players.some(x=>!x.socket))fail('等待双方在线');if(d.accept===true){if(r.pending.kind==='undo')game.undo(r.g);else {r.g=game.newGame();for(const player of r.players){player.color=game.other(player.color);io.to(player.socket).emit('seat',{color:player.color});}r.seen.clear();}}r.pending=null;broadcast(r);return {};});
@@ -29,5 +30,6 @@ io.on('connection',socket=>{
 });
 if(require.main===module){const port=Number(process.env.PORT)||3000;server.listen(port,'0.0.0.0',()=>{console.log(`本机访问：http://localhost:${port}`);for(const list of Object.values(os.networkInterfaces()))for(const n of list)if(n.family==='IPv4'&&!n.internal)console.log(`局域网访问：http://${n.address}:${port}`);console.log('双方请连接同一 Wi-Fi；按 Ctrl+C 停止服务。');});}
 module.exports={server,io,rooms};
+
 
 
