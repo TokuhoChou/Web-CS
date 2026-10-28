@@ -1,0 +1,9 @@
+const test=require('node:test');const assert=require('node:assert/strict');const g=require('../game');
+const empty=()=>Array.from({length:10},()=>Array(9).fill(null));
+function base(){const b=empty();b[9][4]='rK';b[0][4]='bK';b[5][4]='rP';return b;}
+test('初始布局及兵过河',()=>{const b=g.initial();assert.equal(b[9][4],'rK');assert.equal(g.legal(b,'r',0,6,0,5),true);assert.equal(g.legal(b,'r',0,6,1,6),false);b[4][0]='rP';assert.equal(g.pseudo(b,0,4,1,4),true);assert.equal(g.pseudo(b,0,4,0,5),false)});
+test('车、炮、马、象、士、将的走法和阻挡',()=>{let b=base();b[6][0]='rR';assert(g.pseudo(b,0,6,0,1));b[4][0]='bP';assert(!g.pseudo(b,0,6,0,1));b[6][1]='rC';b[4][1]='rP';b[2][1]='bH';assert(g.pseudo(b,1,6,1,2));assert(!g.pseudo(b,1,6,1,1));b[8][1]='rH';assert(g.pseudo(b,1,8,2,6));b[7][1]='rP';assert(!g.pseudo(b,1,8,2,6));b[9][2]='rE';assert(g.pseudo(b,2,9,4,7));b[8][3]='rP';assert(!g.pseudo(b,2,9,4,7));assert(!g.pseudo(b,2,9,0,4));b[9][3]='rA';assert(g.pseudo(b,3,9,4,8));assert(!g.pseudo(b,3,9,2,8));assert(g.pseudo(b,4,9,4,8));assert(!g.pseudo(b,4,9,5,8));});
+test('将帅照面、自陷将军及将军',()=>{const b=base();assert(!g.legal(b,'r',4,5,3,5));b[5][4]=null;assert(g.checked(b,'r'));assert(g.checked(b,'b'));b[5][4]='rP';b[0][0]='rR';assert(g.checked(b,'b'));});
+test('无合法走法判负与悔棋',()=>{const b=empty();b[0][4]='bK';b[9][4]='rK';b[2][3]='rR';b[2][5]='rR';b[3][4]='rP';b[1][0]='rR';assert.equal(g.hasMove(b,'b'),false);const a=g.newGame();assert(g.move(a,'r',0,6,0,5));assert.equal(a.turn,'b');assert(g.undo(a));assert.equal(a.turn,'r');assert.equal(a.board[6][0],'rP');});
+test('相同局面第三次重复判和',()=>{const a=g.newGame();for(let i=0;i<2;i++){for(const [c,fx,fy,tx,ty] of [['r',1,9,2,7],['b',1,0,2,2],['r',2,7,1,9],['b',2,2,1,0]])assert(g.move(a,c,fx,fy,tx,ty));}assert.equal(a.result.reason,'相同局面三次重复');assert.equal(a.result.winner,null);});
+
