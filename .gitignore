@@ -1,0 +1,35 @@
+# Installed dependencies and local portable Node.js
+node_modules/
+node-runtime/
+
+# Build output, caches, and test reports
+dist/
+build/
+coverage/
+.nyc_output/
+.cache/
+.npm/
+*.tsbuildinfo
+
+# Logs and temporary files
+*.log
+*.pid
+*.pid.lock
+tmp/
+temp/
+*.tmp
+*.swp
+*.swo
+
+# Local environment settings (keep shareable examples)
+.env
+.env.*
+!.env.example
+!.env.sample
+
+# Editor and operating system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+Desktop.ini
