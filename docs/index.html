@@ -211,7 +211,7 @@
     async function api(type, data = {}) {
       setConnecting(true);
       try {
-        const response = await fetchWithTimeout("https://chuhe-chess.tokuhochou-chess.workers.dev/api/action", {
+        const response = await fetchWithTimeout("https://chuhe-chess-online.pages.dev/api/action", {
           method: "POST",
           headers: {"content-type":"application/json"},
           body: JSON.stringify({
@@ -257,7 +257,7 @@
       if (!seat || requestInFlight) return schedulePoll();
       requestInFlight = true;
       try {
-        const response = await fetchWithTimeout("https://chuhe-chess.tokuhochou-chess.workers.dev/api/state", {
+        const response = await fetchWithTimeout("https://chuhe-chess-online.pages.dev/api/state", {
           method:"POST",
           headers:{"content-type":"application/json"},
           body:JSON.stringify({code:seat.code, token:seat.token}),
