@@ -687,10 +687,50 @@ function roomCode() {
   return String(100000 + (values[0] % 900000));
 }
 
-function roomState(room, color, now) {
+function roomSettings(data = {}) {
+  const minutes = Number(data.minutes ?? 0), increment = Number(data.increment ?? 0);
+  if (![0,1,3,5,10,15,30,60].includes(minutes) || ![0,3,5,10,30].includes(increment)) throw new Error("计时设置无效");
+  return { name: String(data.name || "楚河棋局").trim().slice(0,24) || "楚河棋局", minutes, increment: minutes ? increment : 0 };
+}
+function newClock(settings) {
+  return settings.minutes ? {remaining:{r:settings.minutes*60000,b:settings.minutes*60000},since:null} : null;
+}
+function settleClock(room, now) {
+  const clock = room.clock;
+  if (!clock || room.game.result || clock.since === null) return;
+  const color = room.game.turn;
+  clock.remaining[color] = Math.max(0, clock.remaining[color] - Math.max(0,now-clock.since));
+  clock.since = now;
+  if (clock.remaining[color] === 0) {
+    room.game.result = {winner:other(color),reason:(color === "r" ? "红方" : "黑方") + "超时"};
+    room.pending = null;
+    clock.since = null;
+  }
+}
+function syncClock(room, now) {
+  if (room.clock) room.clock.since = !room.game.result && room.players.length === 2 ? now : null;
+}
+function onlineSpectators(room,now) {
+  return (room.spectators || []).filter(p => now-(p.seenAt||0) < ONLINE_WINDOW).length;
+}
+async function listRooms(db) {
+  const now = Date.now();
+  const rows = await db.prepare("SELECT code, state, version, seen_r, seen_b, created_at, updated_at, expires_at FROM rooms WHERE expires_at > ?1 ORDER BY updated_at DESC LIMIT 30").bind(now).all();
+  return (rows.results || []).map(row => {
+    const room = parseRoom(row); settleClock(room,now);
+    const onlinePlayers = room.players.filter(p => now-(p.color === "r" ? room.seenR : room.seenB) < ONLINE_WINDOW).length;
+    return {code:room.code,name:room.settings.name,playerCount:room.players.length,onlinePlayers,spectatorCount:onlineSpectators(room,now),settings:room.settings,status:room.game.result ? "ended" : room.players.length < 2 ? "waiting" : onlinePlayers < 2 ? "offline" : "playing"};
+  });
+}
+
+function roomState(room, color, now, token) {
   const game = room.game;
   return {
     code: room.code,
+    name: room.settings?.name || "楚河棋局",
+    settings: room.settings || roomSettings(),
+    clock: room.clock ? {remaining:{...room.clock.remaining},running:room.clock.since !== null ? room.game.turn : null} : null,
+    serverNow: now,
     board: game.board,
     turn: game.turn,
     result: game.result,
@@ -709,8 +749,8 @@ function roomState(room, color, now) {
         now - (player.color === "r" ? room.seenR : room.seenB) < ONLINE_WINDOW,
     })),
     pending: room.pending,
-    spectatorCount: (room.spectators || []).length,
-    you: { color, role: color ? "player" : "spectator" },
+    spectatorCount: onlineSpectators(room,now),
+    you: { color, role: color ? "player" : "spectator", isOwner: token === room.ownerToken },
   };
 }
 
@@ -723,6 +763,9 @@ function parseRoom(row) {
   if (!row) return null;
   return {
     spectators: [],
+    settings: roomSettings(),
+    clock: null,
+    ownerToken: JSON.parse(row.state).players?.[0]?.token,
     ...JSON.parse(row.state),
     code: row.code,
     seenR: row.seen_r,
@@ -746,6 +789,9 @@ async function readRoom(db, code) {
 
 async function writeRoom(db, room, version, now) {
   const state = JSON.stringify({
+    settings: room.settings,
+    clock: room.clock,
+    ownerToken: room.ownerToken,
     players: room.players,
     spectators: room.spectators || [],
     game: room.game,
@@ -787,7 +833,10 @@ async function mutateRoom(db, code, token, callback) {
     const now = Date.now();
     if (player.color === "r") room.seenR = now;
     else if (player.color === "b") room.seenB = now;
+    player.seenAt = now;
+    settleClock(room, now);
     const outcome = await callback(room, player, now);
+    syncClock(room, now);
     if (!(await writeRoom(db, room, row.version, now))) continue;
     return {
       room,
@@ -811,19 +860,26 @@ function requireReady(room, now) {
   }
 }
 
-async function createRoom(db, now) {
+async function createRoom(db, now, data = {}) {
+  const settings = roomSettings(data);
   for (let attempt = 0; attempt < 12; attempt += 1) {
     const code = roomCode();
     const token = randomHex();
     const room = {
       code,
+      settings,
+      ownerToken: token,
+      clock: newClock(settings),
       players: [{ color: "r", token }],
       game: newGame(),
       pending: null,
       seen: [],
     };
     const state = JSON.stringify({
-      players: room.players,
+      settings: room.settings,
+    clock: room.clock,
+    ownerToken: room.ownerToken,
+    players: room.players,
     spectators: room.spectators || [],
       game: room.game,
       pending: null,
@@ -849,12 +905,14 @@ async function joinRoom(db, code, now) {
     const row = await readRoom(db, code);
     if (!row) throw new Error("房间不存在或已结束");
     const room = parseRoom(row);
+    settleClock(room, now);
     const token = randomHex();
     const color = !room.game.result ? ["r", "b"].find(c => !room.players.some(p => p.color === c)) || null : null;
     if (color) {
       room.players.push({ color, token });
       if (color === "r") room.seenR = now; else room.seenB = now;
-    } else room.spectators.push({ color: null, token });
+    } else room.spectators.push({ color: null, token, seenAt: now });
+    syncClock(room, now);
     if (await writeRoom(db, room, row.version, now)) {
       return { room, color, token };
     }
@@ -868,10 +926,10 @@ async function handleAction(db, body, ctx) {
   const now = Date.now();
 
   if (type === "create") {
-    const created = await createRoom(db, now);
+    const created = await createRoom(db, now, data);
     return {
       seat: { code: created.room.code, token: created.token },
-      state: roomState(created.room, created.color, now),
+      state: roomState(created.room, created.color, now, created.token),
     };
   }
 
@@ -882,40 +940,24 @@ async function handleAction(db, body, ctx) {
     const joined = await joinRoom(db, code, now);
     return {
       seat: { code: joined.room.code, token: joined.token },
-      state: roomState(joined.room, joined.color, now),
+      state: roomState(joined.room, joined.color, now, joined.token),
     };
   }
 
   const token = body.token;
   if (type === "restore") {
-    const row = await readRoom(db, code);
-    if (!row) {
-      const error = new Error("房间已结束，请重新创建或加入");
-      error.status = 404;
-      throw error;
-    }
-    const room = parseRoom(row);
-    const player = findPlayer(room, token);
-    if (!player) {
-      const error = new Error("席位已失效，请重新创建或加入");
-      error.status = 401;
-      throw error;
-    }
-    if (player.color === "r") room.seenR = now;
-    else if (player.color === "b") room.seenB = now;
-    await db
-      .prepare(
-        "UPDATE rooms SET seen_r = ?1, seen_b = ?2, expires_at = ?3 WHERE code = ?4",
-      )
-      .bind(room.seenR, room.seenB, now + ROOM_TTL, code)
-      .run();
-    return {
-      seat: { code, token },
-      state: roomState(room, player.color, now),
-    };
+    const response = await handleState(db, {code,token});
+    const result = await response.json();
+    if (!result.ok) {const error = new Error(result.error); error.status=response.status; throw error;}
+    return {seat:result.seat,state:result.state};
   }
 
   const result = await mutateRoom(db, code, token, async (room, player) => {
+    if (type === "settings") {
+      if (player.token !== room.ownerToken) throw new Error("只有创建者可以修改房间设置");
+      if (room.game.history.length || room.game.result) throw new Error("落子前才能修改设置");
+      room.settings = roomSettings(data); room.clock = newClock(room.settings); return {};
+    }
     if (type === "leave") {
       room.players = room.players.filter(value => value.token !== player.token);
       room.spectators = room.spectators.filter(value => value.token !== player.token);
@@ -974,6 +1016,7 @@ async function handleAction(db, body, ctx) {
       ) {
         throw new Error("不符合走棋规则");
       }
+      if (room.clock) room.clock.remaining[player.color] += room.settings.increment * 1000;
       room.seen.push(data.id);
       return {};
     }
@@ -1003,6 +1046,7 @@ async function handleAction(db, body, ctx) {
         if (room.pending.kind === "undo") undoMove(room.game);
         else {
           room.game = newGame();
+          room.clock = newClock(room.settings);
           room.players = room.players.map((value) => ({
             ...value,
             color: other(value.color),
@@ -1035,35 +1079,28 @@ async function handleAction(db, body, ctx) {
   const latestPlayer = findPlayer(result.room, token);
   return {
     seat: { code, token },
-    state: roomState(result.room, latestPlayer.color, result.now),
+    state: roomState(result.room, latestPlayer.color, result.now, token),
   };
 }
 
 async function handleState(db, body) {
-  const code = String(body.code || "").trim();
-  const token = body.token;
-  const row = await readRoom(db, code);
-  if (!row) return json({ ok: false, error: "房间不存在或已结束" }, 404);
-  const room = parseRoom(row);
-  const player = findPlayer(room, token);
-  if (!player) return json({ ok: false, error: "席位已失效，请重新加入" }, 401);
-  const now = Date.now();
-  const previousSeen = player.color === "r" ? room.seenR : room.seenB;
-  if (player.color === "r") room.seenR = now;
-  else if (player.color === "b") room.seenB = now;
-  if (player.color && now - previousSeen >= HEARTBEAT_WRITE_INTERVAL) {
-    await db
-      .prepare(
-        "UPDATE rooms SET seen_r = ?1, seen_b = ?2, expires_at = ?3 WHERE code = ?4",
-      )
-      .bind(room.seenR, room.seenB, now + ROOM_TTL, code)
-      .run();
+  const code = String(body.code || "").trim(), token = body.token;
+  for (let attempt=0; attempt<MAX_ATTEMPTS; attempt++) {
+    const row = await readRoom(db, code);
+    if (!row) return json({ok:false,error:"房间不存在或已结束"},404);
+    const room = parseRoom(row), player = findPlayer(room,token);
+    if (!player) return json({ok:false,error:"席位已失效，请重新加入"},401);
+    const now = Date.now(), wasEnded = Boolean(room.game.result);
+    settleClock(room,now);
+    const previousSeen = player.color === "r" ? room.seenR : player.color === "b" ? room.seenB : player.seenAt || 0;
+    if (player.color === "r") room.seenR=now; else if (player.color === "b") room.seenB=now;
+    player.seenAt=now;
+    if ((!wasEnded && room.game.result) || now-previousSeen >= (player.color ? HEARTBEAT_WRITE_INTERVAL : 15000)) {
+      if (!(await writeRoom(db,room,row.version,now))) continue;
+    }
+    return json({ok:true,seat:{code,token},state:roomState(room,player.color,now,token)});
   }
-  return json({
-    ok: true,
-    seat: { code, token },
-    state: roomState(room, player.color, now),
-  });
+  return json({ok:false,error:"棋局正在更新，请重试"},409);
 }
 
 const app = {
@@ -1087,6 +1124,7 @@ const app = {
     if (!env.DB) return json({ ok: false, error: "数据库暂不可用" }, 503);
 
     try {
+      if (request.method === "GET" && url.pathname === "/api/rooms") return json({ok:true,rooms:await listRooms(env.DB)});
       if (
         request.method === "POST" &&
         (url.pathname === "/api/action" || url.pathname === "/api/state")
@@ -1121,6 +1159,7 @@ const app = {
 };
 
 export const __test = {
+  roomSettings, newClock, settleClock, syncClock, listRooms,
   initialBoard,
   isLegal,
   isChecked,

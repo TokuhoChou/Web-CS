@@ -16,6 +16,7 @@ class MemoryDatabase {
         const row = this.rooms.get(values[0]);
         return row ? structuredClone(row) : null;
       },
+      all: async () => ({results:[...this.rooms.values()].filter(r=>r.expires_at>values[0]).sort((a,b)=>b.updated_at-a.updated_at).slice(0,30).map(r=>structuredClone(r))}),
       run: async () => {
         if (sql.includes("INSERT OR IGNORE")) {
           const [code, state, seenR, created, expires] = values;
@@ -194,4 +195,40 @@ test('满员观战、移出棋手、入座与观战权限', async () => {
   assert.equal((await request(db,'/api/state',watcher2)).status,200);
   for(const member of [red,watcher,watcher2,third.body.seat])await post({type:'leave',...member});
   assert.equal((await request(db,'/api/state',watcher2)).status,404);
+});
+
+test('大厅人数、设置权限、加秒和超时结果持久化', async () => {
+  const db=new MemoryDatabase();const post=body=>request(db,'/api/action',body);
+  assert.equal((await post({type:'create',data:{minutes:-1}})).status,400);
+  const made=await post({type:'create',data:{name:'好友切磋',minutes:1,increment:3}});const red=made.body.seat;
+  assert.equal(made.body.state.you.isOwner,true);assert.equal(made.body.state.clock.running,null);
+  const black=(await post({type:'join',code:red.code})).body.seat;
+  const watcher=(await post({type:'join',code:red.code})).body.seat;
+  assert.equal((await post({type:'settings',...watcher,data:{minutes:10}})).status,400);
+  const configured=await post({type:'settings',...red,data:{name:'快棋局',minutes:1,increment:3}});
+  assert.equal(configured.body.state.clock.running,'r');
+  const listed=await request(db,'/api/rooms');assert.equal(listed.status,200);
+  const room=listed.body.rooms.find(r=>r.code===red.code);assert.equal(room.name,'快棋局');assert.equal(room.playerCount,2);assert.equal(room.onlinePlayers,2);assert.equal(room.spectatorCount,1);assert.equal(room.status,'playing');
+  assert(!JSON.stringify(listed.body).includes(red.token));assert(!JSON.stringify(listed.body).includes(watcher.token));
+  const row=db.rooms.get(red.code),stored=JSON.parse(row.state);stored.clock.since=Date.now()-2000;row.state=JSON.stringify(stored);
+  const moved=await post({type:'move',...red,data:{id:'clock-move',fx:0,fy:6,tx:0,ty:5}});
+  assert.equal(moved.status,200);assert.equal(moved.body.state.clock.running,'b');assert(moved.body.state.clock.remaining.r>60000 && moved.body.state.clock.remaining.r<=61000);
+  assert.equal((await post({type:'settings',...red,data:{minutes:0}})).status,400);
+  const paused=await post({type:'demote',...watcher,data:{color:'b'}});assert.equal(paused.body.state.clock.running,null);
+  const frozen=paused.body.state.clock.remaining.b;
+  const resumed=await post({type:'sit',...watcher,data:{color:'b'}});assert.equal(resumed.body.state.clock.running,'b');assert.equal(resumed.body.state.clock.remaining.b,frozen);
+  const expired=JSON.parse(row.state);expired.clock.remaining.b=1;expired.clock.since=Date.now()-100;row.state=JSON.stringify(expired);
+  const timedOut=await request(db,'/api/state',red);assert.equal(timedOut.body.state.result.winner,'r');assert.equal(timedOut.body.state.result.reason,'黑方超时');assert.equal(timedOut.body.state.clock.running,null);
+  assert.equal(JSON.parse(db.rooms.get(red.code).state).game.result.winner,'r');
+  assert.equal((await post({type:'move',...watcher,data:{id:'late',fx:0,fy:3,tx:0,ty:4}})).status,400);
+  assert.equal((await post({type:'request',...red,data:{kind:'restart'}})).status,200);
+  const restart=await post({type:'respond',...watcher,data:{accept:true}});assert.equal(restart.body.state.clock.remaining.r,60000);assert.equal(restart.body.state.clock.remaining.b,60000);assert.equal(restart.body.state.clock.running,'r');
+});
+
+test('服务器时钟：等待不扣时、空位暂停、超时判负', () => {
+  const settings=__test.roomSettings({minutes:1});const room={settings,clock:__test.newClock(settings),game:__test.newGame(),players:[{color:'r'}],pending:null};
+  __test.syncClock(room,1000);__test.settleClock(room,9000);assert.equal(room.clock.remaining.r,60000);
+  room.players.push({color:'b'});__test.syncClock(room,10000);__test.settleClock(room,13000);assert.equal(room.clock.remaining.r,57000);
+  room.players.pop();__test.syncClock(room,13000);__test.settleClock(room,90000);assert.equal(room.clock.remaining.r,57000);
+  room.players.push({color:'b'});__test.syncClock(room,90000);__test.settleClock(room,147000);assert.equal(room.game.result.winner,'b');assert.equal(room.clock.remaining.r,0);
 });
