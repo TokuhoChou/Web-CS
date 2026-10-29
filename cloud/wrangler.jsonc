@@ -1,0 +1,15 @@
+{
+  "name": "chuhe-chess",
+  "main": "worker.mjs",
+  "compatibility_date": "2026-10-29",
+  "observability": {
+    "enabled": true
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "chuhe-chess",
+      "database_id": "d2a98054-e504-4648-978c-4cd9a630361b"
+    }
+  ]
+}
