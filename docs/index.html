@@ -101,6 +101,7 @@
     @media(max-width:680px){.page{padding:0 4%}.top{height:70px}.top-note{display:none}.intro{padding:34px 0 27px}.intro h1{font-size:26px}.lobby{grid-template-columns:1fr}.lobby-copy,.join{padding:34px 7%}.lobby h2{font-size:24px}.join h3{margin-bottom:20px}.board-frame{padding:7px}.board-inner{padding:3px}.board-heading{align-items:center}.board-heading h2{font-size:18px}.board-heading h2 span{display:block;margin:6px 0 0}.board-foot{font-size:9px}.side{display:block}.record-card{margin-top:12px}.rule-note{margin-top:12px}footer{margin-top:42px}footer span:last-child{display:none}.join-row{flex-direction:column}.join-row .dark{width:100%}.back-button{font-size:13px;min-height:44px;padding:10px 12px}}
     .lobby-copy,.join{min-width:0}.room-row>div{min-width:0;overflow-wrap:anywhere}.room-list{max-height:330px;overflow:auto;margin:12px 0 22px}.room-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:15px 0;border-bottom:1px solid #e4dbcd}.room-row h4{margin:0 0 6px;font-size:15px}.room-row p{margin:0;font:12px/1.8 Arial,sans-serif;color:#857a6a}.room-row button{min-height:44px;white-space:nowrap}.room-list-head{display:flex;justify-content:space-between;align-items:center}.room-list-head h3{margin:16px 0}.settings-fields label{display:block;font-size:12px;color:#756958;margin-top:12px}.settings-fields input,.settings-fields select{display:block;width:100%;min-height:44px;padding:10px;border:1px solid #d9cebc;background:#fffdf9;color:#302a21;margin-top:7px;border-radius:0;font:14px Arial,sans-serif}.setting-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.clock-panel{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:18px}.clock-panel div{border:1px solid #e2d8c8;padding:10px;text-align:center}.clock-panel span{display:block;font-size:11px;color:#857a6a;margin-bottom:5px}.clock-panel b{font:28px monospace;font-variant-numeric:tabular-nums}.clock-panel .ticking{border-color:#9d3d2d;background:#f6e9df}.room-config-note{font-size:11px;line-height:1.8;color:#8b806f}.lobby .join{justify-content:flex-start;padding:30px 7%}.settings-editor{border-top:1px solid #ded4c4;padding-top:12px;margin-top:12px}.settings-editor .actions{margin-top:14px}
     .chat-card{margin-top:14px;min-width:0}.chat-log{height:240px;overflow-y:auto;overscroll-behavior:contain;padding:12px 0;border-top:1px solid #eee6da;margin-top:15px}.chat-message{margin:0 0 14px;overflow-wrap:anywhere}.chat-message small{display:block;color:#9a8b77;font:11px Arial,sans-serif;margin-bottom:5px}.chat-message p{margin:0;padding:9px 11px;background:#f0e9dd;color:#554b3e;font-size:13px;line-height:1.6;white-space:pre-wrap}.chat-message.mine p{background:#eee0cd}.chat-message.mine small{color:#9d3d2d}.chat-form{display:flex;gap:8px;margin-top:12px;align-items:stretch}.chat-form textarea{flex:1;min-width:0;width:100%;resize:vertical;max-height:140px;border:1px solid #d9cebc;background:#fffdf9;padding:10px;font:14px/1.5 Arial,sans-serif;border-radius:0}.chat-form button{min-height:44px;padding:10px 14px;white-space:nowrap}@media(min-width:681px) and (max-width:900px){.chat-card{grid-column:1/-1}}
+    .board-frame{position:relative}.board-chat-alert{position:absolute;top:24px;left:50%;transform:translateX(-50%);z-index:3;max-width:85%;width:max-content;max-height:120px;overflow:hidden;box-sizing:border-box;padding:12px 16px;background:rgba(53,47,40,.95);border:2px solid #e6b877;color:#fff8ea;box-shadow:0 5px 18px #0006;border-radius:8px;font:14px/1.5 Arial,sans-serif;text-align:center;overflow-wrap:anywhere;white-space:pre-wrap;pointer-events:none}@media(max-width:680px){.board-chat-alert{top:15px;font-size:14px;max-width:90%}}
   </style>
 </head>
 <body>
@@ -140,7 +141,7 @@
       <section id="game" class="game-layout" hidden>
         <div class="board-column">
           <div class="board-heading"><div><span class="label">THE BOARD</span><h2>对弈棋局 <span id="room-title"></span></h2></div><button id="copy" class="text-button">复制邀请链接 ↗</button></div>
-          <div class="board-frame"><div class="board-inner"><svg id="board" viewBox="0 0 800 890" role="img" aria-label="中国象棋棋盘"></svg></div></div>
+          <div class="board-frame"><div id="board-chat-alert" class="board-chat-alert" role="status" aria-live="polite" hidden></div><div class="board-inner"><svg id="board" viewBox="0 0 800 890" role="img" aria-label="中国象棋棋盘"></svg></div></div>
           <div class="board-foot"><span>楚河为界，汉界为营</span><span>点击棋子，再点击目标位置</span></div>
         </div>
         <aside class="side">
@@ -205,6 +206,8 @@
     let listInFlight = false;
     let chatSending = false;
     let chatRenderKey = "";
+    let chatLastSeq = 0;
+    let chatAlertTimer = null;
     let pendingChat = null;
 
     function readSeat() {
@@ -267,6 +270,18 @@
       if (key === chatRenderKey) return;
       const log = $("chat-log"), nearBottom = log.scrollHeight-log.scrollTop-log.clientHeight < 50;
       const newRoom = !chatRenderKey.startsWith(current.code+":");
+      if (!newRoom) {
+        const fresh = messages.filter(message => message.seq > chatLastSeq && !message.mine);
+        if (fresh.length) {
+          const latest = fresh[fresh.length-1];
+          const alert = $("board-chat-alert");
+          alert.textContent = (fresh.length > 1 ? fresh.length + " 条新消息 · " : "新消息 · ") + latest.sender + "：" + latest.text;
+          alert.hidden = false;
+          clearTimeout(chatAlertTimer);
+          chatAlertTimer = setTimeout(() => { alert.hidden = true; }, 6000);
+        }
+      }
+      chatLastSeq = messages.length ? messages[messages.length-1].seq : 0;
       chatRenderKey = key;
       log.replaceChildren();
       if (!messages.length) {
@@ -352,7 +367,7 @@
       sessionVersion += 1;
       busy = false;
       saveSeat(null);
-      chatRenderKey="";pendingChat=null;$("chat-input").value="";
+      chatRenderKey="";chatLastSeq=0;clearTimeout(chatAlertTimer);$("board-chat-alert").hidden=true;pendingChat=null;$("chat-input").value="";
       current = null;
       selected = null;
       clearTimeout(pollTimer);
