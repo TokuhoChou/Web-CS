@@ -749,6 +749,7 @@ function roomState(room, color, now, token) {
         now - (player.color === "r" ? room.seenR : room.seenB) < ONLINE_WINDOW,
     })),
     pending: room.pending,
+    messages: (room.messages || []).map(message => ({...message,mine:message.senderId === findPlayer(room,token)?.chatId})),
     spectatorCount: onlineSpectators(room,now),
     you: { color, role: color ? "player" : "spectator", isOwner: token === room.ownerToken },
   };
@@ -763,6 +764,7 @@ function parseRoom(row) {
   if (!row) return null;
   return {
     spectators: [],
+    messages: [],
     settings: roomSettings(),
     clock: null,
     ownerToken: JSON.parse(row.state).players?.[0]?.token,
@@ -794,6 +796,7 @@ async function writeRoom(db, room, version, now) {
     ownerToken: room.ownerToken,
     players: room.players,
     spectators: room.spectators || [],
+    messages: (room.messages || []).slice(-100),
     game: room.game,
     pending: room.pending,
     seen: (room.seen || []).slice(-160),
@@ -881,6 +884,7 @@ async function createRoom(db, now, data = {}) {
     ownerToken: room.ownerToken,
     players: room.players,
     spectators: room.spectators || [],
+    messages: (room.messages || []).slice(-100),
       game: room.game,
       pending: null,
       seen: [],
@@ -953,6 +957,18 @@ async function handleAction(db, body, ctx) {
   }
 
   const result = await mutateRoom(db, code, token, async (room, player) => {
+    if (type === "chat") {
+      if (typeof data.text !== "string" || !data.text.trim() || data.text.length > 200) throw new Error("请输入 1–200 字的消息");
+      if (typeof data.id !== "string" || !data.id || data.id.length > 100) throw new Error("消息请求无效");
+      if (player.lastChatId === data.id) return {};
+      if (now - (player.lastChatAt || 0) < 1000) throw new Error("发送太快，请稍等一秒");
+      player.chatId ||= randomHex(6);
+      const messages = room.messages || [];
+      messages.push({id:randomHex(12),seq:(messages.at(-1)?.seq || 0)+1,senderId:player.chatId,sender:player.color === "r" ? "红方" : player.color === "b" ? "黑方" : "观战者 " + player.chatId.slice(-4).toUpperCase(),text:data.text.trim(),at:now});
+      room.messages = messages.slice(-100);
+      player.lastChatAt = now; player.lastChatId = data.id;
+      return {};
+    }
     if (type === "settings") {
       if (player.token !== room.ownerToken) throw new Error("只有创建者可以修改房间设置");
       if (room.game.history.length || room.game.result) throw new Error("落子前才能修改设置");

@@ -232,3 +232,26 @@ test('服务器时钟：等待不扣时、空位暂停、超时判负', () => {
   room.players.pop();__test.syncClock(room,13000);__test.settleClock(room,90000);assert.equal(room.clock.remaining.r,57000);
   room.players.push({color:'b'});__test.syncClock(room,90000);__test.settleClock(room,147000);assert.equal(room.game.result.winner,'b');assert.equal(room.clock.remaining.r,0);
 });
+
+test('房间聊天：棋手和观战者同步、重试去重、校验与历史上限', async () => {
+  const db=new MemoryDatabase();const post=body=>request(db,'/api/action',body);
+  const red=(await post({type:'create',data:{minutes:1}})).body.seat;
+  const black=(await post({type:'join',code:red.code})).body.seat;
+  const watcher=(await post({type:'join',code:red.code})).body.seat;
+  const text='<img src=x onerror=alert(1)> 你好';
+  const sent=await post({type:'chat',...red,data:{id:'msg-once',text}});
+  assert.equal(sent.status,200);assert.equal(sent.body.state.messages.length,1);assert.equal(sent.body.state.messages[0].text,text);assert.equal(sent.body.state.messages[0].mine,true);assert.equal(sent.body.state.messages[0].sender,'红方');
+  const duplicate=await post({type:'chat',...red,data:{id:'msg-once',text}});assert.equal(duplicate.body.state.messages.length,1);
+  assert.equal((await post({type:'chat',...red,data:{id:'too-fast',text:'重复点'}})).status,400);
+  const seen=await request(db,'/api/state',black);assert.equal(seen.body.state.messages[0].mine,false);assert(!JSON.stringify(seen.body.state.messages).includes(red.token));
+  const observing=await post({type:'chat',...watcher,data:{id:'watch-msg',text:'观战也能发言'}});assert.equal(observing.status,200);assert.match(observing.body.state.messages[1].sender,/观战者/);
+  assert.equal(observing.body.state.turn,'r');assert.equal(observing.body.state.history.length,0);assert.equal(observing.body.state.clock.running,'r');
+  for(const text of ['', '   ', 'x'.repeat(201), null])assert.equal((await post({type:'chat',...black,data:{id:'invalid',text}})).status,400);
+  assert.equal((await post({type:'chat',code:red.code,token:'x'.repeat(48),data:{id:'unknown',text:'no'}})).status,401);
+  assert.equal((await post({type:'restore',...watcher})).body.state.messages.length,2);
+  for(let i=0;i<102;i++){
+    const row=db.rooms.get(red.code),stored=JSON.parse(row.state);stored.players.find(p=>p.token===black.token).lastChatAt=0;row.state=JSON.stringify(stored);
+    assert.equal((await post({type:'chat',...black,data:{id:'bounded-'+i,text:'消息 '+i}})).status,200);
+  }
+  const restored=await post({type:'restore',...red});assert.equal(restored.body.state.messages.length,100);assert.equal(restored.body.state.messages.at(-1).text,'消息 101');assert.equal(restored.body.state.messages.at(-1).seq,104);
+});
