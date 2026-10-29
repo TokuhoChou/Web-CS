@@ -156,5 +156,6 @@ test("公网房间接口：入座、走棋去重、悔棋、认输和换边", as
     (await request(db, "/api/state", red)).body.state.you.color,
     "b",
   );
+  assert.equal((await request(db, "/api/action", {type:"leave", ...red})).status, 200);
+  assert.equal((await request(db, "/api/action", {type:"leave", ...black})).status, 200);
 });
-

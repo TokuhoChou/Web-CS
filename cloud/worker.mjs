@@ -998,6 +998,7 @@ async function handleAction(db, body, ctx) {
   if (result.outcome.deleted) {
     await db.prepare("DELETE FROM rooms WHERE code = ?1").bind(code).run();
   }
+  if (type === "leave") return { seat: null, state: null };
   const latestPlayer = findPlayer(result.room, token);
   return {
     seat: { code, token },
