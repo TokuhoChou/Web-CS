@@ -128,7 +128,7 @@
           <h3>加入朋友的棋局</h3>
           <label for="room-input">输入 6 位房间号</label>
           <div class="join-row"><input id="room-input" maxlength="6" inputmode="numeric" autocomplete="one-time-code" placeholder="例如 123456"><button id="join" class="dark">加入对局</button></div>
-          <p class="hint">房间和棋局会保存 24 小时，刷新页面后可自动回到席位</p>
+          <p class="hint">满员自动进入观战 · 空位可入座 · 无活动 24 小时后过期</p>
         </div>
       </section>
       <section id="game" class="game-layout" hidden>
@@ -150,6 +150,16 @@
             </div>
             <div id="pending" class="pending" hidden><p id="pending-text"></p><div id="pending-actions"><button id="accept" class="dark">同意</button><button id="decline" class="outline">拒绝</button></div></div>
             <div class="actions"><button id="undo" class="outline">申请悔棋</button><button id="resign" class="outline">认输</button><button id="restart" class="primary" hidden>再来一局 <span>→</span></button></div>
+          </div>
+          <div class="status-card" style="margin-top:14px">
+            <div class="label">房间席位 · <span id="spectator-count">0 人观战</span></div>
+            <p id="role-label" class="substatus"></p>
+            <div id="spectator-controls">
+              <div class="actions"><button id="sit-r" class="outline">执红入座</button><button id="sit-b" class="outline">执黑入座</button></div>
+              <div class="actions"><button id="demote-r" class="outline">红方移至观战</button><button id="demote-b" class="outline">黑方移至观战</button></div>
+              <p class="substatus">观战者可调整席位；空位可入座，保留当前棋局。</p>
+            </div>
+            <button id="watch" class="outline" style="min-height:44px">转为观战</button>
           </div>
           <div class="record-card">
             <div class="record-title"><div><span class="label">MOVE HISTORY</span><h3>对局记录</h3></div><span id="move-count">0 步</span></div>
@@ -275,6 +285,7 @@
           return;
         }
         if (!response.ok || !result.ok) throw new Error(result.error || "网络连接中断");
+        if (current?.you.color && !result.state.you.color) toast("你已进入观战区");
         if (result.seat) saveSeat(result.seat);
         current = result.state;
       } catch {
@@ -299,6 +310,7 @@
         if (version !== sessionVersion) return;
         if (options.enter) enter(result);
         else {
+          sessionVersion += 1;
           if (result.seat) saveSeat(result.seat);
           current = result.state;
           selected = null;
@@ -324,13 +336,20 @@
       if (event.key === "Enter") $("join").click();
     });
     $("back").onclick = async () => {
-      if (current?.players.length === 2 && !current.result && !confirm("返回大厅将结束当前对局，确定离开吗？")) return;
+      if (current?.you.color && current.players.length === 2 && !current.result && !confirm("返回大厅将空出你的席位，确定离开吗？")) return;
       const leaving = seat;
       clearRoom();
       if (leaving) {
         try { await api("leave", leaving); } catch {}
       }
     };
+    $("watch").onclick = () => action("watch");
+    for (const color of ["r", "b"]) {
+      $("sit-" + color).onclick = () => action("sit", {color});
+      $("demote-" + color).onclick = () => {
+        if (confirm("将" + (color === "r" ? "红方" : "黑方") + "棋手移至观战区？当前棋局会保留。")) action("demote", {color});
+      };
+    }
     $("undo").onclick = () => action("request", {kind:"undo"});
     $("restart").onclick = () => action("request", {kind:"restart"});
     $("accept").onclick = () => action("respond", {accept:true});
@@ -403,7 +422,7 @@
       }
     }
     function chooseSquare(x, y) {
-      if (!current || busy) return;
+      if (!current || busy || !current.you.color) return;
       const piece = current.board[y][x];
       if (piece?.[0] === current.you.color) {
         selected = {x, y};
@@ -425,7 +444,18 @@
       if (!active) return;
       $("room-title").textContent = "房间 " + current.code;
       const ready = current.players.length === 2 && current.players.every((player) => player.connected);
+      const watching = !current.you.color;
+      const canPlay = ready && !watching;
       const myName = current.you.color === "r" ? "红方" : "黑方";
+      $("spectator-count").textContent = (current.spectatorCount || 0) + " 人观战";
+      $("role-label").textContent = watching ? "你正在观战" : "你执" + myName;
+      $("spectator-controls").hidden = !watching;
+      $("watch").hidden = watching;
+      for (const color of ["r", "b"]) {
+        const occupied = current.players.some(p => p.color === color);
+        $("sit-" + color).hidden = occupied;
+        $("demote-" + color).hidden = !occupied;
+      }
       let status;
       let substatus;
       if (current.result) {
@@ -436,24 +466,24 @@
         substatus = current.players.length < 2 ? "把房间号或邀请链接分享给朋友。" : "玩家暂时离线，请保持页面打开以自动重连。";
       } else {
         status = current.turn === "r" ? "红方行棋" : "黑方行棋";
-        substatus = "你执" + myName + " · " + (current.turn === current.you.color ? "轮到你走棋" : "等待对方走棋") + (current.check ? " · 将军！" : "");
+        substatus = (watching ? "正在观看对弈" : "你执" + myName + " · " + (current.turn === current.you.color ? "轮到你走棋" : "等待对方走棋")) + (current.check ? " · 将军！" : "");
       }
-      $("status").textContent = status;
+      $("status").textContent = (watching ? "观战中 · " : "") + status;
       $("substatus").textContent = substatus;
       for (const [color, id] of [["r","red-player"],["b","black-player"]]) {
         const player = current.players.find((value) => value.color === color);
         $(id).classList.toggle("online", Boolean(player?.connected));
         $(id).querySelector("small").textContent = color === current.you.color ? "你" : player?.connected ? "对手" : "等待中";
       }
-      $("undo").disabled = !ready || Boolean(current.result) || !current.history.length || Boolean(current.pending);
-      $("resign").disabled = !ready || Boolean(current.result);
+      $("undo").disabled = !canPlay || Boolean(current.result) || !current.history.length || Boolean(current.pending);
+      $("resign").disabled = !canPlay || Boolean(current.result);
       $("restart").hidden = !current.result;
-      $("restart").disabled = !ready || Boolean(current.pending);
+      $("restart").disabled = !canPlay || Boolean(current.pending);
       $("pending").hidden = !current.pending;
       if (current.pending) {
         const mine = current.pending.from === current.you.color;
         $("pending-text").textContent = mine ? "等待对方回应" + (current.pending.kind === "undo" ? "悔棋" : "再来一局") + "请求" : "对方请求" + (current.pending.kind === "undo" ? "悔棋" : "再来一局");
-        $("pending-actions").hidden = mine;
+        $("pending-actions").hidden = mine || watching;
       }
       $("move-count").textContent = current.history.length + " 步";
       const historyElement = $("history");

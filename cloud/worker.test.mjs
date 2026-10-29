@@ -159,3 +159,39 @@ test("公网房间接口：入座、走棋去重、悔棋、认输和换边", as
   assert.equal((await request(db, "/api/action", {type:"leave", ...red})).status, 200);
   assert.equal((await request(db, "/api/action", {type:"leave", ...black})).status, 200);
 });
+
+
+
+test('满员观战、移出棋手、入座与观战权限', async () => {
+  const db=new MemoryDatabase();
+  const post=body=>request(db,'/api/action',body);
+  const made=await post({type:'create'});const red=made.body.seat;
+  const black=(await post({type:'join',code:red.code})).body.seat;
+  const watched=await post({type:'join',code:red.code});const watcher=watched.body.seat;
+  assert.equal(watched.body.state.you.role,'spectator');assert.equal(watched.body.state.you.color,null);
+  const watcher2=(await post({type:'join',code:red.code})).body.seat;
+  assert.equal((await request(db,'/api/state',watcher)).body.state.spectatorCount,2);
+  for(const type of ['move','request','respond','resign'])assert.notEqual((await post({type,...watcher,data:{}})).status,200);
+  assert.notEqual((await post({type:'demote',...red,data:{color:'b'}})).status,200);
+  assert.notEqual((await post({type:'sit',...watcher,data:{color:'b'}})).status,200);
+  assert.equal((await post({type:'move',...red,data:{id:'watch-test',fx:0,fy:6,tx:0,ty:5}})).status,200);
+  const demoted=await post({type:'demote',...watcher,data:{color:'b'}});assert.equal(demoted.status,200);
+  assert.equal(demoted.body.state.history.length,1);
+  assert.equal((await post({type:'restore',...black})).body.state.you.color,null);
+  assert.notEqual((await post({type:'move',...black,data:{id:'kicked',fx:0,fy:3,tx:0,ty:4}})).status,200);
+  assert.equal((await post({type:'sit',...watcher,data:{color:'b'}})).body.state.you.color,'b');
+  assert.notEqual((await post({type:'sit',...watcher2,data:{color:'b'}})).status,200);
+  assert.equal((await post({type:'move',...watcher,data:{id:'replacement',fx:0,fy:3,tx:0,ty:4}})).status,200);
+  assert.equal((await post({type:'resign',...watcher})).status,200);
+  assert.equal((await post({type:'request',...red,data:{kind:'restart'}})).status,200);
+  assert.equal((await post({type:'respond',...watcher,data:{accept:true}})).status,200);
+  assert.equal((await request(db,'/api/state',black)).body.state.you.color,null);
+  assert.equal((await request(db,'/api/state',watcher)).body.state.you.color,'r');
+  assert.equal((await post({type:'watch',...watcher})).body.state.you.color,null);
+  const third=await post({type:'join',code:red.code});assert.equal(third.body.state.you.color,'r');
+  await post({type:'leave',...black});
+  assert.equal((await request(db,'/api/state',red)).body.state.result,null);
+  assert.equal((await request(db,'/api/state',watcher2)).status,200);
+  for(const member of [red,watcher,watcher2,third.body.seat])await post({type:'leave',...member});
+  assert.equal((await request(db,'/api/state',watcher2)).status,404);
+});

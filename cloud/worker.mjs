@@ -709,18 +709,20 @@ function roomState(room, color, now) {
         now - (player.color === "r" ? room.seenR : room.seenB) < ONLINE_WINDOW,
     })),
     pending: room.pending,
-    you: { color },
+    spectatorCount: (room.spectators || []).length,
+    you: { color, role: color ? "player" : "spectator" },
   };
 }
 
 function findPlayer(room, token) {
   if (typeof token !== "string" || token.length !== 48) return null;
-  return room.players.find((player) => player.token === token) || null;
+  return [...room.players, ...(room.spectators || [])].find((player) => player.token === token) || null;
 }
 
 function parseRoom(row) {
   if (!row) return null;
   return {
+    spectators: [],
     ...JSON.parse(row.state),
     code: row.code,
     seenR: row.seen_r,
@@ -745,6 +747,7 @@ async function readRoom(db, code) {
 async function writeRoom(db, room, version, now) {
   const state = JSON.stringify({
     players: room.players,
+    spectators: room.spectators || [],
     game: room.game,
     pending: room.pending,
     seen: (room.seen || []).slice(-160),
@@ -783,7 +786,7 @@ async function mutateRoom(db, code, token, callback) {
     }
     const now = Date.now();
     if (player.color === "r") room.seenR = now;
-    else room.seenB = now;
+    else if (player.color === "b") room.seenB = now;
     const outcome = await callback(room, player, now);
     if (!(await writeRoom(db, room, row.version, now))) continue;
     return {
@@ -821,6 +824,7 @@ async function createRoom(db, now) {
     };
     const state = JSON.stringify({
       players: room.players,
+    spectators: room.spectators || [],
       game: room.game,
       pending: null,
       seen: [],
@@ -845,13 +849,14 @@ async function joinRoom(db, code, now) {
     const row = await readRoom(db, code);
     if (!row) throw new Error("房间不存在或已结束");
     const room = parseRoom(row);
-    if (room.players.length >= 2) throw new Error("房间已满");
-    if (room.game.result) throw new Error("房间已结束");
     const token = randomHex();
-    room.players.push({ color: "b", token });
-    room.seenB = now;
+    const color = !room.game.result ? ["r", "b"].find(c => !room.players.some(p => p.color === c)) || null : null;
+    if (color) {
+      room.players.push({ color, token });
+      if (color === "r") room.seenR = now; else room.seenB = now;
+    } else room.spectators.push({ color: null, token });
     if (await writeRoom(db, room, row.version, now)) {
-      return { room, color: "b", token };
+      return { room, color, token };
     }
   }
   throw new Error("入座时发生冲突，请重试");
@@ -897,7 +902,7 @@ async function handleAction(db, body, ctx) {
       throw error;
     }
     if (player.color === "r") room.seenR = now;
-    else room.seenB = now;
+    else if (player.color === "b") room.seenB = now;
     await db
       .prepare(
         "UPDATE rooms SET seen_r = ?1, seen_b = ?2, expires_at = ?3 WHERE code = ?4",
@@ -912,13 +917,41 @@ async function handleAction(db, body, ctx) {
 
   const result = await mutateRoom(db, code, token, async (room, player) => {
     if (type === "leave") {
-      room.players = room.players.filter((value) => value.token !== player.token);
-      if (room.players.length && !room.game.result) {
-        room.game.result = { winner: null, reason: "对方已离开房间" };
-      }
-      room.pending = null;
-      return { deleted: room.players.length === 0 };
+      room.players = room.players.filter(value => value.token !== player.token);
+      room.spectators = room.spectators.filter(value => value.token !== player.token);
+      if (player.color) room.pending = null;
+      return { deleted: room.players.length === 0 && room.spectators.length === 0 };
     }
+    if (type === "demote") {
+      if (player.color) throw new Error("请先进入观战区再调整席位");
+      if (!["r", "b"].includes(data.color)) throw new Error("席位无效");
+      const target = room.players.find(p => p.color === data.color);
+      if (!target) throw new Error("该席位已空出");
+      room.players = room.players.filter(p => p.token !== target.token);
+      room.spectators.push({ ...target, color: null });
+      if (data.color === "r") room.seenR = 0; else room.seenB = 0;
+      room.pending = null;
+      return {};
+    }
+    if (type === "sit") {
+      if (player.color) throw new Error("你已经在棋手席位");
+      if (!["r", "b"].includes(data.color)) throw new Error("席位无效");
+      if (room.players.some(p => p.color === data.color)) throw new Error("该席位已有棋手");
+      room.spectators = room.spectators.filter(p => p.token !== player.token);
+      player.color = data.color;
+      room.players.push(player);
+      if (player.color === "r") room.seenR = now; else room.seenB = now;
+      return {};
+    }
+    if (type === "watch") {
+      if (!player.color) return {};
+      room.players = room.players.filter(p => p.token !== player.token);
+      room.spectators.push({ ...player, color: null });
+      if (player.color === "r") room.seenR = 0; else room.seenB = 0;
+      room.pending = null;
+      return {};
+    }
+    if (!player.color) throw new Error("观战者不能操作棋局，请先入座");
 
     if (type === "move") {
       requireReady(room, now);
@@ -1017,8 +1050,8 @@ async function handleState(db, body) {
   const now = Date.now();
   const previousSeen = player.color === "r" ? room.seenR : room.seenB;
   if (player.color === "r") room.seenR = now;
-  else room.seenB = now;
-  if (now - previousSeen >= HEARTBEAT_WRITE_INTERVAL) {
+  else if (player.color === "b") room.seenB = now;
+  if (player.color && now - previousSeen >= HEARTBEAT_WRITE_INTERVAL) {
     await db
       .prepare(
         "UPDATE rooms SET seen_r = ?1, seen_b = ?2, expires_at = ?3 WHERE code = ?4",
