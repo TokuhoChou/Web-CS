@@ -98,7 +98,7 @@
     .conn-bar{height:2px;position:fixed;top:0;left:0;right:0;background:#9a7560;transform:scaleX(0);transform-origin:left;transition:transform .25s;z-index:6}
     .conn-bar.show{transform:scaleX(1)}
     @media(max-width:900px){.game-layout{grid-template-columns:1fr;gap:24px}.side{display:grid;grid-template-columns:1fr 1fr;gap:12px}.record-card{margin:0}.rule-note{grid-column:1/-1;margin:0}}
-    @media(max-width:680px){.page{padding:0 4%}.top{height:70px}.top-note{display:none}.intro{padding:34px 0 27px}.intro h1{font-size:26px}.lobby{grid-template-columns:1fr}.lobby-copy,.join{padding:34px 7%}.lobby h2{font-size:24px}.join h3{margin-bottom:20px}.board-frame{padding:7px}.board-inner{padding:3px}.board-heading{align-items:center}.board-heading h2{font-size:18px}.board-heading h2 span{display:block;margin:6px 0 0}.board-foot{font-size:9px}.side{display:block}.record-card{margin-top:12px}.rule-note{margin-top:12px}footer{margin-top:42px}footer span:last-child{display:none}.join-row{flex-direction:column}.join-row .dark{width:100%}.back-button{font-size:0;padding:8px 9px}.back-button:after{content:"←";font-size:15px}}
+    @media(max-width:680px){.page{padding:0 4%}.top{height:70px}.top-note{display:none}.intro{padding:34px 0 27px}.intro h1{font-size:26px}.lobby{grid-template-columns:1fr}.lobby-copy,.join{padding:34px 7%}.lobby h2{font-size:24px}.join h3{margin-bottom:20px}.board-frame{padding:7px}.board-inner{padding:3px}.board-heading{align-items:center}.board-heading h2{font-size:18px}.board-heading h2 span{display:block;margin:6px 0 0}.board-foot{font-size:9px}.side{display:block}.record-card{margin-top:12px}.rule-note{margin-top:12px}footer{margin-top:42px}footer span:last-child{display:none}.join-row{flex-direction:column}.join-row .dark{width:100%}.back-button{font-size:13px;min-height:44px;padding:10px 12px}}
   </style>
 </head>
 <body>
@@ -174,6 +174,7 @@
     let busy = false;
     let pollTimer = null;
     let requestInFlight = false;
+    let sessionVersion = 0;
 
     function readSeat() {
       try { return JSON.parse(localStorage.getItem("chuhe-chess-seat") || "null"); }
@@ -230,6 +231,7 @@
       }
     }
     function enter(result) {
+      sessionVersion += 1;
       if (result.seat) saveSeat(result.seat);
       current = result.state;
       selected = null;
@@ -239,6 +241,8 @@
       schedulePoll(0);
     }
     function clearRoom(message) {
+      sessionVersion += 1;
+      busy = false;
       saveSeat(null);
       current = null;
       selected = null;
@@ -256,6 +260,7 @@
     async function poll() {
       if (!seat || requestInFlight) return schedulePoll();
       requestInFlight = true;
+      const version = sessionVersion;
       try {
         const response = await fetchWithTimeout("https://chuhe-chess-online.pages.dev/api/state", {
           method:"POST",
@@ -264,6 +269,7 @@
           cache:"no-store"
         });
         const result = await response.json().catch(() => ({}));
+        if (version !== sessionVersion) return;
         if (response.status === 401 || response.status === 404) {
           clearRoom(result.error || "房间已结束，请重新入座");
           return;
@@ -272,6 +278,7 @@
         if (result.seat) saveSeat(result.seat);
         current = result.state;
       } catch {
+        if (version !== sessionVersion) return;
         $("status").textContent = "连接暂时中断";
         $("substatus").textContent = "正在自动重试，请保持页面打开。";
       } finally {
@@ -283,11 +290,13 @@
     async function action(type, data = {}, options = {}) {
       if (busy) return;
       busy = true;
+      const version = sessionVersion;
       const entryButton = type === "create" ? $("create") : type === "join" ? $("join") : null;
       const entryLabel = entryButton?.innerHTML;
       if (entryButton) { entryButton.disabled = true; entryButton.textContent = type === "create" ? "正在创建房间…" : "正在加入…"; }
       try {
         const result = await api(type, data);
+        if (version !== sessionVersion) return;
         if (options.enter) enter(result);
         else {
           if (result.seat) saveSeat(result.seat);
@@ -316,10 +325,11 @@
     });
     $("back").onclick = async () => {
       if (current?.players.length === 2 && !current.result && !confirm("返回大厅将结束当前对局，确定离开吗？")) return;
-      if (seat) {
-        try { await api("leave"); } catch {}
-      }
+      const leaving = seat;
       clearRoom();
+      if (leaving) {
+        try { await api("leave", leaving); } catch {}
+      }
     };
     $("undo").onclick = () => action("request", {kind:"undo"});
     $("restart").onclick = () => action("request", {kind:"restart"});
